@@ -1,0 +1,37 @@
+# Virtual Environment
+venv/
+env/
+.venv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ChromaDB
+chroma_db/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test/Sample Data
+Test Vault/
+testvault/
+sample_markdown/
+
+# OS
+.Trash/
+.DS_Store
+*.log
+
+# Dependencies
+dist/
+build/
+*.egg-info/
