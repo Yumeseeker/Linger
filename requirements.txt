@@ -1,5 +1,17 @@
+# Step 1: Indexing
 sentence-transformers>=2.2.0
 chromadb>=0.4.0
 spacy>=3.5.0
 rich>=13.0.0
 markdown-it-py>=3.0.0
+
+# Step 2: Suggestion Server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+httpx>=0.25.0
+pydantic>=2.0.0
+# Step 2: Suggestion server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+httpx>=0.24.0
+pydantic>=2.0.0

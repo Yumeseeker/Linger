@@ -50,3 +50,52 @@ STRIP_LINKS = True             # Convert [text](url) to just text
 STRIP_IMAGES = True            # Remove ![alt](url) entirely
 STRIP_HTML = True              # Remove inline HTML tags
 STRIP_TAGS = True              # Remove #tags
+
+# ─── Step 2: Suggestion Server ─────────────────────────────────────────
+
+# --- LLM Backend ---
+# Which LLM provider to use for generating suggestions.
+# Options: "ollama", "openai_compatible"
+#
+# "ollama" — runs locally via Ollama (recommended, free, private)
+#   Install: https://ollama.com → then `ollama pull phi3:mini`
+#
+# "openai_compatible" — any OpenAI-compatible API (DeepSeek, Together, etc.)
+#   Set OPENAI_API_BASE and OPENAI_API_KEY below
+LLM_BACKEND = "ollama"
+
+# Ollama settings
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_MODEL = "deepseek-r1:7b"  # Good balance of speed + quality
+# Alternatives:
+#   "mistral"                    → better quality, slower, needs 8GB+ VRAM
+#   "deepseek-r1:7b"            → strong reasoning, slower
+#   "qwen2.5:1.5b"              → fastest, lower quality
+#   "llama3.1:8b"               → good all-rounder
+
+# OpenAI-compatible API settings (for DeepSeek API, Together, etc.)
+OPENAI_API_BASE = "https://api.deepseek.com/v1"  # Change for other providers
+OPENAI_API_KEY = ""  # Set this or use OPENAI_API_KEY env var
+OPENAI_MODEL = "deepseek-chat"
+
+# --- Generation Settings ---
+# Temperature controls randomness. Lower = more predictable suggestions.
+# For synonym/rephrase tasks, 0.3–0.6 works well.
+LLM_TEMPERATURE = 0.4
+
+# Max tokens for LLM response
+LLM_MAX_TOKENS = 500
+
+# Timeout in seconds for LLM requests
+LLM_TIMEOUT = 120
+
+# --- Suggestion Settings ---
+# Number of alternative suggestions to generate per request
+NUM_SUGGESTIONS = 5
+
+# Number of similar sentences to retrieve from your corpus as context
+RETRIEVAL_TOP_K = 8
+
+# --- Server Settings ---
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = 8111
