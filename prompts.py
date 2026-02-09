@@ -36,21 +36,25 @@ def build_word_prompt(
 ) -> str:
     """
     Build a prompt for single-word synonym suggestions.
-    Strict format with explicit examples of valid/invalid substitutions.
+    Must maintain grammatical correctness in context.
     """
-    examples_block = "\n".join(f"  - \"{ex}\"" for ex in retrieved_examples[:3])
+    examples_block = "\n".join(f"  - \"{ex}\"" for ex in retrieved_examples[:4])
     
-    return f"""TASK: Find 5 direct word substitutes for "{word}".
+    return f"""TASK: Generate 5 exact word substitutes for "{word}".
 
-CONSTRAINT: Each substitute must fit EXACTLY as typed in this sentence (no additions, no removals):
+CRITICAL REQUIREMENT: Each substitute must work EXACTLY as written in this sentence:
 "{sentence}"
 
-VALID examples (direct replacement, no changes needed):
-- "ate supper" (for "ate dinner") ✓
-- "ate meal" (for "ate dinner") ✗ [needs article]
-- "ate lunch" (for "ate dinner") ✓
+This means:
+- If "{word}" is singular, suggestions must be singular
+- If "{word}" is preceded by "a", suggestions cannot require "an" and vice versa
+- If "{word}" is capitalized, suggestions must match that too
+- Suggestions must have identical grammatical behavior (articles, tense, etc.)
 
-ONLY output exact word substitutes:
+Context from this writer's past work:
+{examples_block}
+
+ONLY OUTPUT the numbered list (no explanation):
 1. 
 2. 
 3. 

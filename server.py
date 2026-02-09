@@ -32,7 +32,6 @@ Architecture:
 
 import asyncio
 import re
-import sys
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -154,7 +153,6 @@ class SuggestionResponse(BaseModel):
     )
     request_type: str = Field(..., description="Type of suggestion (word/phrase/sentence/completion)")
     latency_ms: int = Field(..., description="Total request time in milliseconds")
-    raw_response: str = Field(default="", description="Raw LLM response (for debugging)")
 
 
 class HealthResponse(BaseModel):
@@ -238,50 +236,36 @@ async def suggest_word(req: WordRequest):
     """
     Get synonym suggestions for a single word.
 
-    This is the core tip-of-the-tongue feature. Given a word and its context,
-    retrieves similar sentences from your writing, then asks the LLM to suggest
-    alternatives that match your personal vocabulary.
+    Uses Datamuse API for synonyms, ranked by your personal vocabulary.
+    Words you've used before appear first. No LLM, no vector DB — just
+    a dictionary API + a hashmap lookup.
     """
     start = time.time()
 
-    # Use the full sentence as the retrieval query for better context matching
-    query_text = req.sentence if req.sentence else req.word
-    examples = retrieve_similar(query_text)
+    from thesaurus import suggest_synonyms_detailed
 
-    # Also retrieve examples specifically about the word itself
-    word_examples = retrieve_similar(req.word, top_k=4)
-
-    # Merge and deduplicate
-    all_examples = list(dict.fromkeys(examples + word_examples))[:config.RETRIEVAL_TOP_K]
-
-    prompt = build_word_prompt(
+    detailed = suggest_synonyms_detailed(
         word=req.word,
         sentence=req.sentence,
-        paragraph=req.paragraph or req.sentence,
-        retrieved_examples=all_examples,
+        max_results=config.NUM_SUGGESTIONS,
     )
 
-    try:
-        raw_response = await llm_client.generate(prompt, system=SYSTEM_PROMPT)
-        print(f"\n[RAW_RESPONSE_START]\n{raw_response}\n[RAW_RESPONSE_END]\n", flush=True)
-        suggestions = parse_suggestions(raw_response)
-        print(f"[PARSED_SUGGESTIONS]: {suggestions}\n", flush=True)
-    except Exception as e:
-        # If LLM fails, fall back to retrieval-only mode:
-        # extract unique words from retrieved examples that could be synonyms
-        raw_response = f"ERROR: {type(e).__name__}: {str(e)}"
-        import traceback
-        print(f"\n[ERROR in suggest_word]:\n{traceback.format_exc()}\n", file=sys.stderr, flush=True)
-        suggestions = _fallback_word_suggestions(req.word, all_examples)
+    suggestions = [s["word"] for s in detailed]
+
+    # Show which ones are from personal vocab
+    examples = [
+        f"{s['word']} ({s['personal_usage']}x in your writing)"
+        for s in detailed
+        if s.get("personal_usage", 0) > 0
+    ]
 
     latency = int((time.time() - start) * 1000)
 
     return SuggestionResponse(
         suggestions=suggestions,
-        retrieved_examples=all_examples[:5],  # Show a few for transparency
+        retrieved_examples=examples,
         request_type="word",
         latency_ms=latency,
-        raw_response=raw_response,
     )
 
 
@@ -386,45 +370,6 @@ async def suggest_completion(req: CompletionRequest):
         request_type="completion",
         latency_ms=latency,
     )
-
-
-# ─── Fallback: Retrieval-Only Suggestions ──────────────────────────────
-
-def _fallback_word_suggestions(word: str, examples: list[str]) -> list[str]:
-    """
-    If the LLM is unavailable, extract potential synonyms from retrieved examples.
-
-    This is a basic fallback that looks at what words appear in similar positions
-    in your past writing. It's not as good as LLM-powered suggestions, but it
-    means the tool still works without an LLM running.
-    """
-    import spacy
-    try:
-        nlp = spacy.load("en_core_web_sm")
-    except OSError:
-        return []
-
-    # Get POS tag of the target word
-    target_doc = nlp(word)
-    target_pos = target_doc[0].pos_ if target_doc else None
-
-    # Extract words from examples that share the same POS
-    candidates = {}
-    for example in examples:
-        doc = nlp(example)
-        for token in doc:
-            if (
-                token.pos_ == target_pos
-                and token.text.lower() != word.lower()
-                and token.is_alpha
-                and not token.is_stop
-                and len(token.text) > 2
-            ):
-                candidates[token.text.lower()] = candidates.get(token.text.lower(), 0) + 1
-
-    # Sort by frequency in your writing (most common = most "you")
-    sorted_candidates = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
-    return [word for word, count in sorted_candidates[:config.NUM_SUGGESTIONS]]
 
 
 # ─── Run Server ────────────────────────────────────────────────────────
