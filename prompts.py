@@ -171,26 +171,46 @@ Here are sentences from this writer's past work — match this style:
 5. {sentence_so_far}"""
 
 
-def parse_suggestions(raw_response: str) -> list[str]:
+_QUOTE_CHARS = "\"'“”‘’"
+
+
+def parse_suggestions(raw_response: str, reject: str = "") -> list[str]:
     """
     Parse the LLM's response into a clean list of suggestions.
-    
-    Simply extracts numbered list items (1., 2., etc.)
+
+    Handles the messy realities of LLM output:
+    - <think>...</think> reasoning blocks (deepseek-r1 and similar models)
+    - numbered items ("1. word", "1) word") and bullets ("- word", "* word")
+    - markdown bold and surrounding quotes
+    - duplicates (case-insensitive) and echoes of the original text (reject)
     """
-    lines = raw_response.strip().split("\n")
+    text = re.sub(r"<think>.*?</think>", "", raw_response, flags=re.DOTALL)
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[-1]
+
+    reject_norm = reject.strip().strip(_QUOTE_CHARS).lower()
+    seen = set()
     suggestions = []
 
-    for line in lines:
+    for line in text.strip().split("\n"):
         line = line.strip()
         if not line:
             continue
 
-        # Match numbered items: "1. word", "1) word", etc.
-        match = re.match(r'^\d+[\.\)]\s*(.+)$', line)
-        if match:
-            suggestion = match.group(1).strip()
-            # Basic sanity check: must be at least 2 chars
-            if len(suggestion) >= 2:
-                suggestions.append(suggestion)
+        match = re.match(r'^(?:\d+[\.\)]|[-*•])\s*(.+)$', line)
+        if not match:
+            continue
+
+        suggestion = match.group(1).strip()
+        suggestion = re.sub(r'\*\*(.+?)\*\*', r'\1', suggestion)
+        suggestion = suggestion.strip(_QUOTE_CHARS + " ").strip()
+
+        if len(suggestion) < 2:
+            continue
+        key = suggestion.lower()
+        if key in seen or (reject_norm and key == reject_norm):
+            continue
+        seen.add(key)
+        suggestions.append(suggestion)
 
     return suggestions[:config.NUM_SUGGESTIONS]

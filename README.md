@@ -1,250 +1,276 @@
-# Writing Copilot — Step 1: Indexing Your Writing
+# Writing Copilot
+
+A personalized writing assistant that learns from your own writing style.
 
 ## What This Does
 
-This is the foundation of your writing copilot. It takes a folder of your markdown files,
-splits them into meaningful chunks (sentences and short phrases), converts each chunk into
-a numerical vector that represents its meaning, and stores everything in a local vector
-database (ChromaDB). Once indexed, you can query it: give it a word or sentence, and it
-returns the most similar things you've ever written.
+Three-step system:
 
-This is the retrieval half of RAG. Step 2 (later) adds the generation half.
+1. **Index** your markdown writing into a vector database (ChromaDB)
+2. **Suggest** alternatives for words, phrases, and sentences using retrieval + LLM
+3. **Integrate** with Obsidian plugin for in-editor suggestions
+
+## Architecture: Two Strategies
+
+### Word Synonyms — Context-Aware + Personal
+
+**LLM synonyms + Vocabulary Hashmap** (default: `SYNONYM_BACKEND = "llm"`)
+```
+"inclined" + sentence → LLM (Gemini/Ollama) → [prone, apt, willing, ...]
+                     → Check which ones you've used before (O(1) lookup)
+                     → Return: personal words first, ranked by frequency
+```
+
+- **Context-aware:** the full sentence disambiguates polysemous words
+- **Resilient:** falls back to the free Datamuse API automatically if the
+  LLM is unavailable (set `SYNONYM_BACKEND = "datamuse"` to always use it)
+
+### Phrases & Sentences — Two-Stage RAG
+
+**ChromaDB → Cross-Encoder Reranker → LLM**
+```
+"rephrase this phrase" → ChromaDB: bi-encoder retrieves 30 candidate sentences
+                      → Reranker: cross-encoder scores (query, sentence) pairs
+                                  jointly, keeps the best 8
+                      → LLM: "Given these examples of my voice..."
+                      → Generate: personalized suggestions
+```
+
+- Bi-encoder (sentence-transformers) is fast but lossy; the cross-encoder
+  reranker reads each pair jointly and is much more accurate — this is the
+  standard retrieve-then-rerank RAG architecture
+- Personal vocabulary & style (reranked examples inform the LLM in-context)
 
 ## Tech Stack
 
-| Tool | What It Does | Why This One |
+| Tool | What It Does | Why |
 |---|---|---|
-| **Python 3.10+** | Language for the backend | Best ML ecosystem, all libraries available |
-| **sentence-transformers** | Converts text → vectors | Industry standard, runs locally, no API needed |
-| **all-MiniLM-L6-v2** | The specific embedding model | 80MB, fast on CPU, good quality for semantic search |
-| **ChromaDB** | Stores and searches vectors | Simple API, handles persistence, no server needed |
-| **spaCy** | Splits text into sentences | More accurate than regex, handles abbreviations etc. |
-| **rich** | Terminal output formatting | Makes the CLI tool pleasant to use |
+| **Gemini API** | Suggestion generation (default LLM) | Fast, cheap, high quality (`gemini-2.5-flash`) |
+| **Ollama** | Local LLM fallback | Free, private, no API key needed |
+| **ChromaDB** | Vector database for semantic search | Fast similarity search of your past writing |
+| **sentence-transformers** | Text → vectors + cross-encoder reranker | Industry standard, runs locally |
+| **Datamuse API** | Synonym fallback when no LLM available | Free, no credentials |
+| **spaCy** | Sentence segmentation | Accurate, handles abbreviations |
+| **FastAPI** | Web server | Simple, fast, async |
+| **httpx** | HTTP client | Clean API for external calls |
 
 ## Setup
 
-### 1. Install Python (if needed)
-
-Check with `python3 --version`. You need 3.10 or higher.
-
-### 2. Create a virtual environment
+### 1. Clone & install dependencies
 
 ```bash
-cd writing-copilot
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+cd /path/to/Linger/files
+pip install -r requirements.txt
+python -m spacy download en_core_web_sm
 ```
 
-### 3. Install dependencies
+### 2. Add your Gemini API key
 
+```bash
+cp .env.example .env
+# then edit .env and set GEMINI_API_KEY=...
+# (get a key at https://aistudio.google.com/apikey)
+```
+
+No key? Run everything locally instead: `LLM_BACKEND=ollama python server.py`
+(requires Ollama with `ollama pull phi3:mini`).
+
+### 3. Index your writing
+
+```bash
+python vocab_index.py /path/to/your/markdown/vault
+python index_writing.py /path/to/your/markdown/vault
+```
+
+This creates:
+- `vocab_index.json` — word frequency counter (~1MB)
+- `chroma_db/` — ChromaDB vector database
+
+### 4. Start the server
+
+```bash
+python server.py
+```
+
+Server runs at `http://127.0.0.1:8111`  
+API docs at `http://127.0.0.1:8111/docs`
+
+### 5. Test it
+
+```bash
+python test_server.py
+```
+
+Choose an endpoint, test with your own text.
+
+## Configuration
+
+Secrets live in `.env` (gitignored — never put keys in config.py):
+
+```bash
+GEMINI_API_KEY=...
+# optional overrides:
+# LLM_BACKEND=ollama
+# GEMINI_MODEL=gemini-2.5-flash
+```
+
+Everything else is in `config.py`:
+
+```python
+# Phrase/sentence/completion: which LLM?
+LLM_BACKEND = "gemini"   # default; also: "ollama", "openai_compatible"
+
+# Word synonyms: LLM with automatic Datamuse fallback
+SYNONYM_BACKEND = "llm"  # or "datamuse"
+
+# Two-stage retrieval
+USE_RERANKER = True
+RETRIEVAL_CANDIDATES = 30  # stage 1: bi-encoder candidates
+RETRIEVAL_TOP_K = 8        # stage 2: kept after cross-encoder rerank
+
+# Ollama settings (local fallback)
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_MODEL = "phi3:mini"  # avoid reasoning models like deepseek-r1
+```
+
+## Project Structure
+
+```
+files/
+├── README.md                    # This file
+├── CLAUDE.md                    # Context/instructions for AI agents
+├── config.py                    # Configuration (no secrets)
+├── .env.example                 # Template for .env (API keys)
+│
+├── index_writing.py             # Index markdown → ChromaDB
+├── query_writing.py             # CLI tool to test retrieval
+├── vocab_index.py               # Build word frequency index
+│
+├── server.py                    # FastAPI suggestion server
+├── llm_client.py                # LLM abstraction (Gemini/Ollama/OpenAI-compatible)
+├── reranker.py                  # Cross-encoder reranker (retrieval stage 2)
+├── thesaurus.py                 # Word synonym lookup (LLM/Datamuse)
+├── prompts.py                   # Prompt templates + output parsing
+│
+├── test_server.py               # CLI tool to test server
+│
+├── chroma_db/                   # Vector database (created on first run)
+└── vocab_index.json             # Word frequencies (created by vocab_index.py)
+```
+
+## Step-by-Step Usage
+
+### Step 1: Index Your Writing
+
+```bash
+# Build vocabulary index (one-time setup)
+python vocab_index.py ~/Documents/MyVault/
+# Shows: word frequencies, statistics
+
+# Index into ChromaDB (one-time setup)
+python index_writing.py ~/Documents/MyVault/
+# Shows: sentences indexed, embedding time
+```
+
+Both create persistent files, re-run when you add new writing.
+
+### Step 2: Test Retrieval
+
+```bash
+# Interactive retrieval testing
+python query_writing.py --interactive
+
+# Type: "she said the results"
+# Returns: Most similar sentences from your past writing
+```
+
+### Step 3: Start the Server
+
+**Terminal 1:**
+```bash
+python server.py
+```
+
+**Terminal 2:**
+```bash
+python test_server.py
+```
+
+Or use curl:
+```bash
+# Test word synonyms
+curl -X POST http://localhost:8111/suggest/word \
+  -H "Content-Type: application/json" \
+  -d '{
+    "word": "big",
+    "sentence": "The problem is very big."
+  }'
+
+# Response:
+# {
+#   "suggestions": ["large", "huge", "substantial", "massive", "enormous"],
+#   "retrieved_examples": ["big (10x in your writing)"],
+#   "latency_ms": 45
+# }
+```
+
+## Which Backend Should I Use?
+
+### **Gemini (default)**
+✅ Use when:
+- You want the best quality and lowest latency
+- You're OK with a (very cheap) API dependency
+- Setup: put `GEMINI_API_KEY` in `.env`, done
+
+### **Ollama (local fallback)**
+✅ Use when:
+- You want privacy / fully offline operation
+- You don't want any API key
+- Use `phi3:mini` or similar; avoid reasoning models (deepseek-r1, qwq) —
+  they spend seconds emitting `<think>` text before answering
+
+### **Datamuse for Synonyms**
+✅ Use when:
+- You want zero-dependency synonym lookup (<100ms, free)
+- Note: it's the automatic fallback when the LLM is unreachable, so you
+  usually don't need to set it explicitly
+
+❌ Doesn't work well for:
+- Polysemous words ("inclined" → physical meaning instead of figurative)
+
+## Tuning
+
+Edit `config.py`:
+
+```python
+NUM_SUGGESTIONS = 5           # How many alternatives to show
+RETRIEVAL_TOP_K = 8           # How many examples to retrieve (more = slower)
+LLM_TEMPERATURE = 0.4         # Lower = more predictable, Higher = creative
+LLM_TIMEOUT = 120             # Seconds before request times out
+```
+
+Edit `prompts.py` to change how suggestions are generated.
+
+## Troubleshooting
+
+**"ModuleNotFoundError: No module named 'spacy'"**
 ```bash
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 ```
 
-### 4. Index your writing
-
+**"ChromaDB error: No collection found"**
 ```bash
-python index_writing.py /path/to/your/markdown/folder
+# Run indexing first
+python index_writing.py ~/Documents/MyVault/
 ```
 
-This will:
-- Recursively find all `.md` files in that folder
-- Extract text (stripping markdown formatting)
-- Split into sentences
-- Generate embeddings for each sentence
-- Store everything in a local ChromaDB database at `./chroma_db/`
+**"OpenAI API: insufficient_quota"**
+- Check your OpenAI account at https://platform.openai.com/account/billing
+- Switch back to Datamuse: `SYNONYM_BACKEND = "datamuse"`
 
-### 5. Test retrieval
+**"Connection refused" (server won't start)**
+- Port 8111 might be in use, or Ollama isn't running
+- Check: `lsof -i :8111` and `ollama serve`
 
-```bash
-python query_writing.py "she said the results were unclear"
-```
-
-This will return the 10 most similar sentences from your own writing,
-ranked by cosine similarity. This is how you verify the system is working
-before building the suggestion engine or the Obsidian plugin.
-
-### 6. Interactive mode
-
-```bash
-python query_writing.py --interactive
-```
-
-Type sentences or words and see what your past writing has that's similar.
-Press Ctrl+C to exit.
-
-## Project Structure
-
-```
-writing-copilot/
-├── README.md                 # This file
-├── requirements.txt          # Python dependencies
-├── config.py                 # Configuration (paths, models, server settings)
-├── index_writing.py          # Step 1: Index your markdown files into ChromaDB
-├── query_writing.py          # Step 1: CLI tool to test retrieval
-├── server.py                 # Step 2: FastAPI server — the brain
-├── llm_client.py             # Step 2: Abstraction over Ollama / OpenAI APIs
-├── prompts.py                # Step 2: Prompt templates for each suggestion type
-├── test_server.py            # Step 2: CLI tool to test the server
-├── chroma_db/                # Created on first run — your vector database
-└── sample_markdown/          # Test .md files
-```
-
----
-
-## Step 2: Suggestion Server
-
-The suggestion server combines retrieval (your indexed writing) with generation
-(a local or remote LLM) to produce personalized suggestions.
-
-### How It Works
-
-```
-Your Editor (Obsidian, etc.)
-       │
-       │  POST /suggest/word  {"text": "said", "sentence": "She said..."}
-       ▼
-┌──────────────────────────────┐
-│    Suggestion Server         │
-│    (FastAPI on localhost)    │
-│                              │
-│  1. Retrieve: search ChromaDB│ ← finds sentences where you used
-│     for similar past writing │   similar words in similar contexts
-│                              │
-│  2. Prompt: build a prompt   │ ← "given these examples from this
-│     with your writing as     │   writer's past work, suggest
-│     context                  │   alternatives for 'said'"
-│                              │
-│  3. Generate: send to LLM    │ ← local Ollama or remote API
-│                              │
-│  4. Parse: extract clean     │ ← returns: remarked, noted,
-│     suggestions              │   observed, offered, stated
-└──────────────────────────────┘
-```
-
-### Prerequisites
-
-1. **Your writing must be indexed** (Step 1 — see above)
-
-2. **An LLM must be available.** Pick one:
-
-   **Option A: Ollama (recommended — free, private, local)**
-   ```bash
-   # Install Ollama: https://ollama.com
-   # Then pull a model:
-   ollama pull phi3:mini      # Fast, 3.8B params, ~2GB download
-   # OR
-   ollama pull mistral        # Better quality, 7B params, ~4GB
-   # OR
-   ollama pull deepseek-r1:7b # Strong reasoning, 7B params
-   ```
-
-   **Option B: DeepSeek API (or any OpenAI-compatible API)**
-   ```python
-   # In config.py, set:
-   LLM_BACKEND = "openai_compatible"
-   OPENAI_API_BASE = "https://api.deepseek.com/v1"
-   OPENAI_API_KEY = "your-key-here"
-   OPENAI_MODEL = "deepseek-chat"
-   ```
-
-### Running the Server
-
-```bash
-# Terminal 1: Start the server
-source venv/bin/activate
-python server.py
-
-# Terminal 2: Test it
-python test_server.py --examples          # Run all example types
-python test_server.py --word "said"       # Single word synonym
-python test_server.py --interactive       # Interactive REPL
-python test_server.py --health            # Check status
-```
-
-### API Endpoints
-
-**POST /suggest/word** — Synonyms for a single word
-```bash
-curl -X POST http://localhost:8111/suggest/word \
-  -H "Content-Type: application/json" \
-  -d '{"text": "said", "sentence": "She said the results were inconclusive."}'
-```
-
-**POST /suggest/phrase** — Rephrase a phrase
-```bash
-curl -X POST http://localhost:8111/suggest/phrase \
-  -H "Content-Type: application/json" \
-  -d '{"text": "idea generating", "sentence": "Why am I so idea generating these days."}'
-```
-
-**POST /suggest/sentence** — Rewrite a full sentence
-```bash
-curl -X POST http://localhost:8111/suggest/sentence \
-  -H "Content-Type: application/json" \
-  -d '{"text": "The results were not what we expected."}'
-```
-
-**POST /suggest/complete** — Complete an unfinished sentence
-```bash
-curl -X POST http://localhost:8111/suggest/complete \
-  -H "Content-Type: application/json" \
-  -d '{"text": "The fundamental problem with"}'
-```
-
-**POST /suggest** — Auto-detect type
-```bash
-curl -X POST http://localhost:8111/suggest \
-  -H "Content-Type: application/json" \
-  -d '{"text": "determination"}'
-```
-
-**GET /health** — Server status
-```bash
-curl http://localhost:8111/health
-```
-
-### Tuning Suggestions
-
-Edit `config.py` to adjust:
-- `LLM_TEMPERATURE` — Lower (0.2) = more predictable, Higher (0.8) = more creative
-- `RETRIEVAL_TOP_K` — More retrieved examples = more context but slower
-- `NUM_SUGGESTIONS` — How many alternatives to generate
-- `LLM_TIMEOUT` — Increase if your model is slow to respond
-
-Edit `prompts.py` to adjust the actual prompts sent to the LLM. This is where
-you have the most control over suggestion quality.
-
-## How the Pieces Fit Together
-
-```
-Your Markdown Files
-       │
-       ▼
-┌─────────────────┐
-│ index_writing.py │ ← Reads files, strips markdown, splits sentences
-└────────┬────────┘
-         │ sentences
-         ▼
-┌─────────────────────────┐
-│ sentence-transformers    │ ← Converts each sentence to a 384-dim vector
-│ (all-MiniLM-L6-v2)      │
-└────────┬────────────────┘
-         │ vectors + metadata
-         ▼
-┌─────────────────┐
-│    ChromaDB      │ ← Stores vectors, enables fast similarity search
-│  (./chroma_db/)  │
-└─────────────────┘
-         │
-         ▼ query time
-┌─────────────────┐
-│ query_writing.py │ ← Takes your current text, finds similar past writing
-└─────────────────┘
-```
-
-## Next Steps (after this works)
-
-- **Step 3**: Build the Obsidian plugin that calls this server and renders ghost text
-- **Step 4**: Fine-tune a small model on your writing for even better personalization
+## Next Steps

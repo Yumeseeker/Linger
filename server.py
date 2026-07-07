@@ -79,22 +79,23 @@ def retrieve_similar(text: str, top_k: int = None) -> list[str]:
     """
     Retrieve the most similar sentences from your writing corpus.
 
-    This is the "retrieval" in RAG — it finds examples from YOUR past writing
-    that are contextually similar to what you're currently writing.
-    The LLM then uses these examples to generate suggestions in your voice.
+    Two-stage retrieval: ChromaDB's bi-encoder fetches a wide candidate set,
+    then a cross-encoder reranks the (query, sentence) pairs and keeps the
+    best top_k. The LLM uses these examples to generate suggestions in your voice.
     """
     top_k = top_k or config.RETRIEVAL_TOP_K
     collection = get_collection()
 
+    n_candidates = config.RETRIEVAL_CANDIDATES if config.USE_RERANKER else top_k
     results = collection.query(
         query_texts=[text],
-        n_results=top_k,
+        n_results=n_candidates,
         include=["documents", "distances"],
     )
 
     # Filter by max distance and deduplicate
     seen = set()
-    examples = []
+    candidates = []
     for doc, dist in zip(results["documents"][0], results["distances"][0]):
         if dist > config.MAX_DISTANCE:
             continue
@@ -103,9 +104,13 @@ def retrieve_similar(text: str, top_k: int = None) -> list[str]:
         if normalized in seen:
             continue
         seen.add(normalized)
-        examples.append(doc)
+        candidates.append(doc)
 
-    return examples
+    if config.USE_RERANKER:
+        from reranker import rerank
+        return rerank(text, candidates, top_k)
+
+    return candidates[:top_k]
 
 
 # ─── Request/Response Models ───────────────────────────────────────────
@@ -176,6 +181,14 @@ async def lifespan(app: FastAPI):
         print(f"⚠ ChromaDB not available: {e}")
         print("  Run index_writing.py first to create the index.")
 
+    if config.USE_RERANKER:
+        try:
+            from reranker import get_reranker
+            get_reranker()
+            print(f"✓ Reranker loaded: {config.RERANKER_MODEL}")
+        except Exception as e:
+            print(f"⚠ Reranker unavailable, using bi-encoder only: {e}")
+
     llm = LLMClient()
     health = await llm.health_check()
     if health["status"] == "ok":
@@ -236,15 +249,15 @@ async def suggest_word(req: WordRequest):
     """
     Get synonym suggestions for a single word.
 
-    Uses Datamuse API for synonyms, ranked by your personal vocabulary.
-    Words you've used before appear first. No LLM, no vector DB — just
-    a dictionary API + a hashmap lookup.
+    Uses the configured LLM for context-aware synonyms (falling back to the
+    Datamuse API when the LLM is unavailable), ranked by your personal
+    vocabulary — words you've used before appear first.
     """
     start = time.time()
 
     from thesaurus import suggest_synonyms_detailed
 
-    detailed = suggest_synonyms_detailed(
+    detailed = await suggest_synonyms_detailed(
         word=req.word,
         sentence=req.sentence,
         max_results=config.NUM_SUGGESTIONS,
@@ -290,7 +303,7 @@ async def suggest_phrase(req: PhraseRequest):
 
     try:
         raw_response = await llm_client.generate(prompt, system=SYSTEM_PROMPT)
-        suggestions = parse_suggestions(raw_response)
+        suggestions = parse_suggestions(raw_response, reject=req.phrase)
     except Exception as e:
         suggestions = [f"[LLM error: {e}]"]
 
@@ -324,7 +337,7 @@ async def suggest_sentence(req: SentenceRequest):
 
     try:
         raw_response = await llm_client.generate(prompt, system=SYSTEM_PROMPT)
-        suggestions = parse_suggestions(raw_response)
+        suggestions = parse_suggestions(raw_response, reject=req.sentence)
     except Exception as e:
         suggestions = [f"[LLM error: {e}]"]
 
@@ -359,6 +372,15 @@ async def suggest_completion(req: CompletionRequest):
     try:
         raw_response = await llm_client.generate(prompt, system=SYSTEM_PROMPT)
         suggestions = parse_suggestions(raw_response)
+        # Models often echo the prompt's prefix back; keep only the new text.
+        prefix = req.sentence_so_far.strip().lower()
+        trimmed = []
+        for s in suggestions:
+            if s.lower().startswith(prefix):
+                s = s[len(prefix):].lstrip()
+            if s:
+                trimmed.append(s)
+        suggestions = trimmed
     except Exception as e:
         suggestions = [f"[LLM error: {e}]"]
 

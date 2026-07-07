@@ -1,27 +1,24 @@
 """
-Synonym lookup using Datamuse API or OpenAI + personal vocabulary ranking.
+Synonym lookup using the configured LLM or Datamuse + personal vocabulary ranking.
 
-Supports two backends:
-    1. Datamuse — free, no-auth, limited semantic understanding
-    2. OpenAI — better context awareness, requires API key
+Supports two backends (SYNONYM_BACKEND in config.py):
+    "llm"      — context-aware synonyms via the configured LLM backend
+                 (Gemini/Ollama/OpenAI-compatible); falls back to Datamuse
+                 if the LLM is unavailable or returns nothing
+    "datamuse" — free, no-auth dictionary API; fast but no context awareness
 
 Pipeline:
-    1. Query API for synonyms
+    1. Query backend for synonyms
     2. Check which synonyms you've used before (vocab_index hashmap)
-    3. Personal words → top of list. Others ranked by API score.
-
-Configure SYNONYM_BACKEND in config.py to choose:
-    "datamuse" — free, faster, simpler
-    "openai"   — better for polysemy, needs API key
+    3. Personal words → top of list. Others ranked by backend score.
 
 API docs:
     - Datamuse: https://www.datamuse.com/api/
-    - OpenAI: https://platform.openai.com/docs/api-reference
 """
 
+import re
+
 import httpx
-import os
-from typing import Optional
 
 import config
 
@@ -135,6 +132,53 @@ def get_synonyms_datamuse(
     return results[:max_results]
 
 
+# ─── LLM Queries ──────────────────────────────────────────────────────
+
+async def get_synonyms_llm(
+    word: str,
+    sentence: str = "",
+    max_results: int = 20,
+) -> list[dict]:
+    """
+    Get context-aware synonyms from the configured LLM backend.
+
+    Returns [] on any failure so the caller can fall back to Datamuse.
+    """
+    from llm_client import LLMClient
+
+    context_hint = f' as used in this sentence: "{sentence}"' if sentence else ""
+    prompt = f"""Give exactly {max_results} synonyms for the word "{word}"{context_hint}.
+Each synonym must work as a drop-in replacement with the same grammatical form
+(same tense, number, and capitalization).
+Output ONLY a comma-separated list of words, nothing else.
+Example: large, huge, enormous, vast, gigantic"""
+
+    try:
+        text = await LLMClient().generate(
+            prompt,
+            system="You are a thesaurus. Provide only synonyms, nothing else.",
+        )
+    except Exception as e:
+        print(f"LLM synonym lookup failed, falling back to Datamuse: {e}")
+        return []
+
+    # Split on commas/newlines, strip any stray numbering or quotes
+    candidates = re.split(r"[,\n]", text)
+    results = []
+    seen = {word.lower()}
+    for i, raw in enumerate(candidates):
+        syn = re.sub(r"^\s*\d+[\.\)]\s*", "", raw).strip().strip("\"'")
+        if not syn or syn.lower() in seen:
+            continue
+        seen.add(syn.lower())
+        results.append({
+            "word": syn,
+            "score": 10000 - i * 100,  # Earlier suggestions rank higher
+            "source": "llm",
+        })
+    return results
+
+
 # ─── Personal Vocabulary Ranking ──────────────────────────────────────
 
 def rank_by_personal_usage(
@@ -168,37 +212,26 @@ def rank_by_personal_usage(
 
 # ─── Main Functions ───────────────────────────────────────────────────
 
-def suggest_synonyms(
-    word: str,
-    sentence: str = "",
-    max_results: int = None,
-) -> list[str]:
-    """
-    Get synonyms for a word. Personal vocabulary first, then Datamuse ranked.
-    """
-    max_results = max_results or config.NUM_SUGGESTIONS
-
-    synonyms = get_synonyms_datamuse(word, sentence, max_results=max_results * 2)
-
-    if not synonyms:
-        return []
-
-    synonyms = rank_by_personal_usage(synonyms)
-
-    return [s["word"] for s in synonyms[:max_results]]
-
-
-def suggest_synonyms_detailed(
+async def suggest_synonyms_detailed(
     word: str,
     sentence: str = "",
     max_results: int = None,
 ) -> list[dict]:
     """
     Get synonyms with full metadata (score, usage count, source).
+
+    Uses config.SYNONYM_BACKEND: "llm" tries the configured LLM first and
+    falls back to Datamuse, "datamuse" goes straight to Datamuse.
+    Personal vocabulary always ranks first.
     """
     max_results = max_results or config.NUM_SUGGESTIONS
 
-    synonyms = get_synonyms_datamuse(word, sentence, max_results=max_results * 2)
+    synonyms = []
+    if getattr(config, "SYNONYM_BACKEND", "datamuse") == "llm":
+        synonyms = await get_synonyms_llm(word, sentence, max_results=max_results * 2)
+
+    if not synonyms:
+        synonyms = get_synonyms_datamuse(word, sentence, max_results=max_results * 2)
 
     if not synonyms:
         return []
@@ -206,3 +239,13 @@ def suggest_synonyms_detailed(
     synonyms = rank_by_personal_usage(synonyms)
 
     return synonyms[:max_results]
+
+
+async def suggest_synonyms(
+    word: str,
+    sentence: str = "",
+    max_results: int = None,
+) -> list[str]:
+    """Get synonyms for a word. Personal vocabulary first, then backend ranked."""
+    detailed = await suggest_synonyms_detailed(word, sentence, max_results)
+    return [s["word"] for s in detailed]

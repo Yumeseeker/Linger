@@ -2,9 +2,29 @@
 Configuration for Writing Copilot.
 
 Edit these values to customize behavior. The defaults work well for most cases.
+
+Secrets (API keys) live in a .env file next to this file, never in here:
+    GEMINI_API_KEY=...
+Any setting read via os.environ below can also be overridden from .env.
 """
 
+import os
 from pathlib import Path
+
+
+def _load_dotenv(path: Path) -> None:
+    """Minimal .env loader (KEY=VALUE lines). Real env vars take precedence."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+_load_dotenv(Path(__file__).parent / ".env")
 
 # --- Paths ---
 # Where ChromaDB stores your indexed writing
@@ -55,28 +75,37 @@ STRIP_TAGS = True              # Remove #tags
 
 # --- LLM Backend ---
 # Which LLM provider to use for generating suggestions.
-# Options: "ollama", "openai_compatible"
+# Options: "gemini", "ollama", "openai_compatible"
 #
-# "ollama" — runs locally via Ollama (recommended, free, private)
+# "gemini" — Google Gemini API (recommended: fast, cheap, high quality)
+#   Put GEMINI_API_KEY=... in .env (get one at https://aistudio.google.com/apikey)
+#
+# "ollama" — runs locally via Ollama (free, private, no key needed)
 #   Install: https://ollama.com → then `ollama pull phi3:mini`
 #
 # "openai_compatible" — any OpenAI-compatible API (DeepSeek, Together, etc.)
-#   Set OPENAI_API_BASE and OPENAI_API_KEY below
-LLM_BACKEND = "ollama"
+#   Set OPENAI_API_KEY in .env and OPENAI_API_BASE below
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "gemini")
 
-# Ollama settings
+# Gemini settings
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+# Ollama settings (local fallback)
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "deepseek-r1:7b"  # Good balance of speed + quality
+OLLAMA_MODEL = "phi3:mini"  # Fast, no reasoning tags in output
 # Alternatives:
 #   "mistral"                    → better quality, slower, needs 8GB+ VRAM
-#   "deepseek-r1:7b"            → strong reasoning, slower
 #   "qwen2.5:1.5b"              → fastest, lower quality
 #   "llama3.1:8b"               → good all-rounder
+# Avoid reasoning models (deepseek-r1, qwq) — they waste seconds "thinking"
+# before emitting suggestions.
 
-# OpenAI-compatible API settings (for DeepSeek API, Together, etc.)
-OPENAI_API_BASE = "https://api.deepseek.com/v1"  # Change for other providers
-OPENAI_API_KEY = ""  # Set this or use OPENAI_API_KEY env var
-OPENAI_MODEL = "deepseek-chat"
+# OpenAI-compatible API settings (for DeepSeek, Together, etc.)
+OPENAI_API_BASE = "https://api.openai.com/v1"  # Change for other providers
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")  # Set in .env
+OPENAI_MODEL = "gpt-4o-mini"
 
 # --- Generation Settings ---
 # Temperature controls randomness. Lower = more predictable suggestions.
@@ -90,10 +119,24 @@ LLM_MAX_TOKENS = 500
 LLM_TIMEOUT = 120
 
 # --- Suggestion Settings ---
+# Which backend to use for word synonym suggestions.
+# Options:
+#   "llm"      — context-aware synonyms via the configured LLM backend,
+#                falls back to Datamuse if the LLM is unavailable
+#   "datamuse" — free dictionary API, fast but no context awareness
+SYNONYM_BACKEND = "llm"
+
 # Number of alternative suggestions to generate per request
 NUM_SUGGESTIONS = 5
 
-# Number of similar sentences to retrieve from your corpus as context
+# --- Retrieval (two-stage) ---
+# Stage 1: ChromaDB bi-encoder fetches RETRIEVAL_CANDIDATES nearest sentences.
+# Stage 2: a cross-encoder reranks them and keeps RETRIEVAL_TOP_K.
+# The cross-encoder scores (query, sentence) pairs jointly, which is much more
+# accurate than embedding distance alone — that's the reranker in the RAG stack.
+USE_RERANKER = True
+RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RETRIEVAL_CANDIDATES = 30
 RETRIEVAL_TOP_K = 8
 
 # --- Server Settings ---
