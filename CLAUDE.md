@@ -25,6 +25,8 @@ Obsidian keystroke to inserted suggestion.
 
 This repo is `/Users/brianzhang/Documents/Linger/files/`. Key files:
 
+- `README.md` - how to run it; `HOW_IT_WORKS.md` - architecture deep dive and
+  resume material (keep both in sync with code changes)
 - `config.py` - all settings; loads secrets from `.env` (gitignored, see `.env.example`)
 - `index_writing.py` - builds the ChromaDB index; `--reindex` to rebuild, `--stats`
 - `vocab_index.py` - builds/queries the word frequency index

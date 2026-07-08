@@ -1,276 +1,173 @@
-# Writing Copilot
+# Linger - Writing Copilot
 
-A personalized writing assistant that learns from your own writing style.
+A personalized writing assistant that suggests words, phrases, sentence rewrites,
+and sentence completions in your own voice, powered by RAG over your private
+writing corpus.
 
-## What This Does
+Want to understand the internals? Read [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
-Three-step system:
+## Run it (everything is already set up on this machine)
 
-1. **Index** your markdown writing into a vector database (ChromaDB)
-2. **Suggest** alternatives for words, phrases, and sentences using retrieval + LLM
-3. **Integrate** with Obsidian plugin for in-editor suggestions
+The index (27k+ sentences), the venv, and the `.env` with the Gemini key already
+exist, so running it is two steps:
 
-## Architecture: Two Strategies
-
-### Word Synonyms — Context-Aware + Personal
-
-**LLM synonyms + Vocabulary Hashmap** (default: `SYNONYM_BACKEND = "llm"`)
-```
-"inclined" + sentence → LLM (Gemini/Ollama) → [prone, apt, willing, ...]
-                     → Check which ones you've used before (O(1) lookup)
-                     → Return: personal words first, ranked by frequency
-```
-
-- **Context-aware:** the full sentence disambiguates polysemous words
-- **Resilient:** falls back to the free Datamuse API automatically if the
-  LLM is unavailable (set `SYNONYM_BACKEND = "datamuse"` to always use it)
-
-### Phrases & Sentences — Two-Stage RAG
-
-**ChromaDB → Cross-Encoder Reranker → LLM**
-```
-"rephrase this phrase" → ChromaDB: bi-encoder retrieves 30 candidate sentences
-                      → Reranker: cross-encoder scores (query, sentence) pairs
-                                  jointly, keeps the best 8
-                      → LLM: "Given these examples of my voice..."
-                      → Generate: personalized suggestions
-```
-
-- Bi-encoder (sentence-transformers) is fast but lossy; the cross-encoder
-  reranker reads each pair jointly and is much more accurate — this is the
-  standard retrieve-then-rerank RAG architecture
-- Personal vocabulary & style (reranked examples inform the LLM in-context)
-
-## Tech Stack
-
-| Tool | What It Does | Why |
-|---|---|---|
-| **Gemini API** | Suggestion generation (default LLM) | Fast, cheap, high quality (`gemini-2.5-flash`) |
-| **Ollama** | Local LLM fallback | Free, private, no API key needed |
-| **ChromaDB** | Vector database for semantic search | Fast similarity search of your past writing |
-| **sentence-transformers** | Text → vectors + cross-encoder reranker | Industry standard, runs locally |
-| **Datamuse API** | Synonym fallback when no LLM available | Free, no credentials |
-| **spaCy** | Sentence segmentation | Accurate, handles abbreviations |
-| **FastAPI** | Web server | Simple, fast, async |
-| **httpx** | HTTP client | Clean API for external calls |
-
-## Setup
-
-### 1. Clone & install dependencies
+**1. Start the server**
 
 ```bash
-cd /path/to/Linger/files
+cd ~/Documents/Linger/files
+./venv/bin/python server.py
+```
+
+You should see:
+
+```
+✓ ChromaDB connected: 27643 sentences indexed
+✓ Reranker loaded: cross-encoder/ms-marco-MiniLM-L-6-v2
+✓ LLM connected: gemini / gemini-2.5-flash
+  Server running at http://127.0.0.1:8111
+```
+
+Sanity check: `curl http://127.0.0.1:8111/health` or open
+http://127.0.0.1:8111/docs for interactive API docs.
+
+**2. Use it from Obsidian**
+
+Open the Test Vault in Obsidian, enable **Linger Writing Copilot** under
+Settings -> Community plugins, then in any note open the command palette
+(Cmd+P) and run:
+
+- **Suggest synonyms for word** - word at cursor (or selection)
+- **Rephrase selection** - select a phrase first
+- **Rephrase current sentence** - cursor anywhere in the sentence
+- **Complete sentence** - cursor at the end of your partial sentence
+
+Pick a suggestion from the modal and it replaces the text in place. The plugin's
+settings tab has the server URL if you ever change the port.
+
+**No Obsidian handy?** Test from the terminal instead:
+
+```bash
+./venv/bin/python test_server.py          # interactive CLI
+
+# or raw curl:
+curl -X POST http://127.0.0.1:8111/suggest/sentence \
+  -H "Content-Type: application/json" \
+  -d '{"sentence": "The meeting went longer than I expected.", "paragraph": ""}'
+```
+
+## Run it offline (no API, fully local)
+
+```bash
+LLM_BACKEND=ollama ./venv/bin/python server.py
+```
+
+Requires Ollama running with `phi3:mini` pulled (`ollama pull phi3:mini`).
+Quality and latency are worse than Gemini (~5s vs ~1s) but nothing leaves your
+machine. Avoid reasoning models like `deepseek-r1` - they burn seconds emitting
+`<think>` text before answering.
+
+## Re-index when you've written new things
+
+The indexes don't update themselves. After adding writing to your vault:
+
+```bash
+./venv/bin/python vocab_index.py "/path/to/your/vault"     # word frequencies
+./venv/bin/python index_writing.py "/path/to/your/vault"   # sentence embeddings
+```
+
+Indexing is incremental (already-indexed sentences are skipped). Use
+`--reindex` to wipe and rebuild, `--stats` to inspect what's in there.
+
+## First-time setup (new machine)
+
+```bash
+cd files
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
-```
 
-### 2. Add your Gemini API key
+cp .env.example .env        # then put GEMINI_API_KEY=... in .env
+                            # (get a key at https://aistudio.google.com/apikey)
 
-```bash
-cp .env.example .env
-# then edit .env and set GEMINI_API_KEY=...
-# (get a key at https://aistudio.google.com/apikey)
-```
-
-No key? Run everything locally instead: `LLM_BACKEND=ollama python server.py`
-(requires Ollama with `ollama pull phi3:mini`).
-
-### 3. Index your writing
-
-```bash
-python vocab_index.py /path/to/your/markdown/vault
-python index_writing.py /path/to/your/markdown/vault
-```
-
-This creates:
-- `vocab_index.json` — word frequency counter (~1MB)
-- `chroma_db/` — ChromaDB vector database
-
-### 4. Start the server
-
-```bash
+python vocab_index.py  ~/path/to/vault
+python index_writing.py ~/path/to/vault
 python server.py
 ```
 
-Server runs at `http://127.0.0.1:8111`  
-API docs at `http://127.0.0.1:8111/docs`
+For the plugin on a new vault: copy
+`Test Vault/.obsidian/plugins/hello-world/` into the new vault's
+`.obsidian/plugins/` and enable it. To modify the plugin, edit `src/` and run
+`npm run build` inside the plugin folder.
 
-### 5. Test it
+## The API
 
-```bash
-python test_server.py
-```
+| Endpoint | Body | Does |
+|---|---|---|
+| `POST /suggest/word` | `{word, sentence, paragraph}` | Context-aware synonyms, your vocabulary first |
+| `POST /suggest/phrase` | `{phrase, sentence, paragraph}` | Rephrase a span within a sentence |
+| `POST /suggest/sentence` | `{sentence, paragraph}` | Five rewrites of the sentence |
+| `POST /suggest/complete` | `{sentence_so_far, paragraph}` | Copilot-style endings |
+| `GET /health` | - | Database + LLM status |
 
-Choose an endpoint, test with your own text.
+All suggestion responses: `{suggestions, retrieved_examples, request_type, latency_ms}`.
 
 ## Configuration
 
-Secrets live in `.env` (gitignored — never put keys in config.py):
-
-```bash
-GEMINI_API_KEY=...
-# optional overrides:
-# LLM_BACKEND=ollama
-# GEMINI_MODEL=gemini-2.5-flash
-```
-
-Everything else is in `config.py`:
+Secrets go in `.env` (gitignored), everything else in `config.py`:
 
 ```python
-# Phrase/sentence/completion: which LLM?
-LLM_BACKEND = "gemini"   # default; also: "ollama", "openai_compatible"
+LLM_BACKEND = "gemini"       # or "ollama", "openai_compatible"
+SYNONYM_BACKEND = "llm"      # or "datamuse" (free, no context awareness)
 
-# Word synonyms: LLM with automatic Datamuse fallback
-SYNONYM_BACKEND = "llm"  # or "datamuse"
+USE_RERANKER = True          # two-stage retrieval on/off
+RETRIEVAL_CANDIDATES = 30    # stage 1: bi-encoder candidates from ChromaDB
+RETRIEVAL_TOP_K = 8          # stage 2: kept after cross-encoder rerank
 
-# Two-stage retrieval
-USE_RERANKER = True
-RETRIEVAL_CANDIDATES = 30  # stage 1: bi-encoder candidates
-RETRIEVAL_TOP_K = 8        # stage 2: kept after cross-encoder rerank
-
-# Ollama settings (local fallback)
-OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "phi3:mini"  # avoid reasoning models like deepseek-r1
+NUM_SUGGESTIONS = 5
+LLM_TEMPERATURE = 0.4        # lower = safer, higher = more creative
 ```
 
-## Project Structure
-
-```
-files/
-├── README.md                    # This file
-├── CLAUDE.md                    # Context/instructions for AI agents
-├── config.py                    # Configuration (no secrets)
-├── .env.example                 # Template for .env (API keys)
-│
-├── index_writing.py             # Index markdown → ChromaDB
-├── query_writing.py             # CLI tool to test retrieval
-├── vocab_index.py               # Build word frequency index
-│
-├── server.py                    # FastAPI suggestion server
-├── llm_client.py                # LLM abstraction (Gemini/Ollama/OpenAI-compatible)
-├── reranker.py                  # Cross-encoder reranker (retrieval stage 2)
-├── thesaurus.py                 # Word synonym lookup (LLM/Datamuse)
-├── prompts.py                   # Prompt templates + output parsing
-│
-├── test_server.py               # CLI tool to test server
-│
-├── chroma_db/                   # Vector database (created on first run)
-└── vocab_index.json             # Word frequencies (created by vocab_index.py)
-```
-
-## Step-by-Step Usage
-
-### Step 1: Index Your Writing
-
-```bash
-# Build vocabulary index (one-time setup)
-python vocab_index.py ~/Documents/MyVault/
-# Shows: word frequencies, statistics
-
-# Index into ChromaDB (one-time setup)
-python index_writing.py ~/Documents/MyVault/
-# Shows: sentences indexed, embedding time
-```
-
-Both create persistent files, re-run when you add new writing.
-
-### Step 2: Test Retrieval
-
-```bash
-# Interactive retrieval testing
-python query_writing.py --interactive
-
-# Type: "she said the results"
-# Returns: Most similar sentences from your past writing
-```
-
-### Step 3: Start the Server
-
-**Terminal 1:**
-```bash
-python server.py
-```
-
-**Terminal 2:**
-```bash
-python test_server.py
-```
-
-Or use curl:
-```bash
-# Test word synonyms
-curl -X POST http://localhost:8111/suggest/word \
-  -H "Content-Type: application/json" \
-  -d '{
-    "word": "big",
-    "sentence": "The problem is very big."
-  }'
-
-# Response:
-# {
-#   "suggestions": ["large", "huge", "substantial", "massive", "enormous"],
-#   "retrieved_examples": ["big (10x in your writing)"],
-#   "latency_ms": 45
-# }
-```
-
-## Which Backend Should I Use?
-
-### **Gemini (default)**
-✅ Use when:
-- You want the best quality and lowest latency
-- You're OK with a (very cheap) API dependency
-- Setup: put `GEMINI_API_KEY` in `.env`, done
-
-### **Ollama (local fallback)**
-✅ Use when:
-- You want privacy / fully offline operation
-- You don't want any API key
-- Use `phi3:mini` or similar; avoid reasoning models (deepseek-r1, qwq) —
-  they spend seconds emitting `<think>` text before answering
-
-### **Datamuse for Synonyms**
-✅ Use when:
-- You want zero-dependency synonym lookup (<100ms, free)
-- Note: it's the automatic fallback when the LLM is unreachable, so you
-  usually don't need to set it explicitly
-
-❌ Doesn't work well for:
-- Polysemous words ("inclined" → physical meaning instead of figurative)
-
-## Tuning
-
-Edit `config.py`:
-
-```python
-NUM_SUGGESTIONS = 5           # How many alternatives to show
-RETRIEVAL_TOP_K = 8           # How many examples to retrieve (more = slower)
-LLM_TEMPERATURE = 0.4         # Lower = more predictable, Higher = creative
-LLM_TIMEOUT = 120             # Seconds before request times out
-```
-
-Edit `prompts.py` to change how suggestions are generated.
+`LLM_BACKEND`, `GEMINI_API_KEY`, and `GEMINI_MODEL` can also be set per-run as
+environment variables, which is how you flip to Ollama without editing anything.
 
 ## Troubleshooting
 
-**"ModuleNotFoundError: No module named 'spacy'"**
-```bash
-pip install -r requirements.txt
-python -m spacy download en_core_web_sm
+**"ChromaDB error: No collection found"** - run `index_writing.py` first.
+
+**LLM status `no_api_key` in /health** - `.env` is missing or has no
+`GEMINI_API_KEY`. Copy `.env.example` and fill it in.
+
+**Plugin says "cannot reach server"** - the server isn't running; start it with
+`./venv/bin/python server.py`. If you changed the port, update the plugin's
+server URL setting.
+
+**Port 8111 already in use** - `lsof -i :8111` to find the old process, or run
+with `--port 8112` (and update the plugin setting).
+
+**Suggestions are slow locally** - you're on the Ollama fallback. Check
+`/health` shows `gemini`, and that you didn't leave `LLM_BACKEND=ollama` set.
+
+## Project structure
+
 ```
-
-**"ChromaDB error: No collection found"**
-```bash
-# Run indexing first
-python index_writing.py ~/Documents/MyVault/
+files/
+├── README.md            # This file: how to run it
+├── HOW_IT_WORKS.md      # Deep dive into the architecture + resume material
+├── CLAUDE.md            # Context/instructions for AI agents
+├── config.py            # All settings (no secrets)
+├── .env                 # Secrets (gitignored); .env.example is the template
+│
+├── index_writing.py     # Vault -> ChromaDB sentence index
+├── vocab_index.py       # Vault -> word frequency index
+├── query_writing.py     # CLI: test retrieval directly
+│
+├── server.py            # FastAPI suggestion server
+├── llm_client.py        # Gemini / Ollama / OpenAI-compatible clients
+├── reranker.py          # Cross-encoder reranker (retrieval stage 2)
+├── thesaurus.py         # Synonyms: LLM w/ Datamuse fallback + vocab ranking
+├── prompts.py           # Prompt templates + LLM output parsing
+├── test_server.py       # CLI: test the endpoints
+│
+├── chroma_db/           # Vector database (generated)
+└── vocab_index.json     # Word frequencies (generated)
 ```
-
-**"OpenAI API: insufficient_quota"**
-- Check your OpenAI account at https://platform.openai.com/account/billing
-- Switch back to Datamuse: `SYNONYM_BACKEND = "datamuse"`
-
-**"Connection refused" (server won't start)**
-- Port 8111 might be in use, or Ollama isn't running
-- Check: `lsof -i :8111` and `ollama serve`
-
-## Next Steps
