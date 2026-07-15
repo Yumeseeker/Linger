@@ -66,6 +66,34 @@ Quality and latency are worse than Gemini (~5s vs ~1s) but nothing leaves your
 machine. Avoid reasoning models like `deepseek-r1` - they burn seconds emitting
 `<think>` text before answering.
 
+## Switching LLM providers
+
+Gemini is the default, not a requirement. `LLM_BACKEND` picks one of three
+backends in `llm_client.py`:
+
+| `LLM_BACKEND` | Covers | Setup |
+|---|---|---|
+| `gemini` (default) | Google Gemini API | `GEMINI_API_KEY` in `.env`; pick a model with `GEMINI_MODEL` (default `gemini-2.5-flash`) |
+| `ollama` | Any local Ollama model | Ollama running and a model pulled; no API key |
+| `openai_compatible` | OpenAI, DeepSeek, Together, local vLLM - anything that speaks the OpenAI Chat Completions API | `OPENAI_API_KEY` in `.env`; point `OPENAI_API_BASE` and `OPENAI_MODEL` in `config.py` at your provider |
+
+Switch for a single run with an environment variable:
+
+```bash
+LLM_BACKEND=openai_compatible ./venv/bin/python server.py
+```
+
+or persistently by setting `LLM_BACKEND=...` in `.env`.
+
+Two caveats:
+
+- The Ollama and OpenAI-compatible model/URL settings currently live in
+  `config.py` (only the Gemini model and the keys are read from `.env`), so
+  pointing at a different provider means editing `config.py` once.
+- Providers whose native API is not OpenAI-compatible (e.g. Anthropic's
+  Messages API) are not supported yet; adding one means a new `_generate_*`
+  method in `llm_client.py`.
+
 ## Re-index when you've written new things
 
 The indexes don't update themselves. After adding writing to your vault:
@@ -87,7 +115,9 @@ pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 
 cp .env.example .env        # then put GEMINI_API_KEY=... in .env
-                            # (get a key at https://aistudio.google.com/apikey)
+                            # (get a key at https://aistudio.google.com/apikey),
+                            # or configure another provider - see
+                            # "Switching LLM providers" above
 
 python vocab_index.py  ~/path/to/vault
 python index_writing.py ~/path/to/vault
@@ -128,7 +158,8 @@ LLM_TEMPERATURE = 0.4        # lower = safer, higher = more creative
 ```
 
 `LLM_BACKEND`, `GEMINI_API_KEY`, and `GEMINI_MODEL` can also be set per-run as
-environment variables, which is how you flip to Ollama without editing anything.
+environment variables, which is how you flip providers without editing anything
+(see "Switching LLM providers" above).
 
 ## Troubleshooting
 

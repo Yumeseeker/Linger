@@ -31,7 +31,7 @@ This repo is `/Users/brianzhang/Documents/Linger/files/`. Key files:
 - `index_writing.py` - builds the ChromaDB index; `--reindex` to rebuild, `--stats`
 - `vocab_index.py` - builds/queries the word frequency index
 - `server.py` - the FastAPI suggestion server
-- `llm_client.py` - LLM abstraction (backends: ollama, openai_compatible; gemini pending)
+- `llm_client.py` - LLM abstraction (backends: gemini, ollama, openai_compatible)
 - `thesaurus.py` - word synonym lookup (Datamuse + personal-usage ranking)
 - `prompts.py` - prompt templates and `parse_suggestions()` output parser
 - `query_writing.py`, `test_server.py` - CLI tools for testing retrieval / endpoints
