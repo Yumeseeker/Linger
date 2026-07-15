@@ -16,6 +16,10 @@ __pycache__/
 # ChromaDB
 chroma_db/
 
+# AI agent context
+.claude/
+CLAUDE.md
+
 # IDE
 .vscode/
 .idea/

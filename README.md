@@ -184,7 +184,6 @@ with `--port 8112` (and update the plugin setting).
 files/
 ├── README.md            # This file: how to run it
 ├── HOW_IT_WORKS.md      # Deep dive into the architecture + resume material
-├── CLAUDE.md            # Context/instructions for AI agents
 ├── config.py            # All settings (no secrets)
 ├── .env                 # Secrets (gitignored); .env.example is the template
 │
